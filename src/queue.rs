@@ -36,6 +36,10 @@ impl JobQueue {
         self
     }
 
+    pub fn config(&self) -> &QueueConfig {
+        &self.config
+    }
+
     pub async fn enqueue<T>(&self, job: Job<T>) -> JobResult<String>
     where
         T: serde::Serialize,

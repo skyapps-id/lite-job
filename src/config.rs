@@ -1,5 +1,6 @@
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 static REDIS_SEMAPHORE: OnceCell<Semaphore> = OnceCell::new();
@@ -8,6 +9,10 @@ static REDIS_SEMAPHORE: OnceCell<Semaphore> = OnceCell::new();
 pub struct RedisConfig {
     pub url: String,
     pub pool_size: usize,
+    pub min_idle: usize,
+    pub max_lifetime: u64,
+    pub idle_timeout: u64,
+    pub connection_timeout: u64,
     pub cluster_mode: bool,
     pub key_prefix: String,
     pub job_ttl: u64,
@@ -19,6 +24,10 @@ impl RedisConfig {
         Self {
             url: url.into(),
             pool_size: 20,
+            min_idle: 2,
+            max_lifetime: 3600,
+            idle_timeout: 600,
+            connection_timeout: 5,
             cluster_mode: false,
             key_prefix: "lite-job".to_string(),
             job_ttl: 86400,
@@ -28,6 +37,26 @@ impl RedisConfig {
 
     pub fn with_pool_size(mut self, size: usize) -> Self {
         self.pool_size = size;
+        self
+    }
+
+    pub fn with_min_idle(mut self, min_idle: usize) -> Self {
+        self.min_idle = min_idle;
+        self
+    }
+
+    pub fn with_max_lifetime(mut self, secs: u64) -> Self {
+        self.max_lifetime = secs;
+        self
+    }
+
+    pub fn with_idle_timeout(mut self, secs: u64) -> Self {
+        self.idle_timeout = secs;
+        self
+    }
+
+    pub fn with_connection_timeout(mut self, secs: u64) -> Self {
+        self.connection_timeout = secs;
         self
     }
 
@@ -52,6 +81,18 @@ impl RedisConfig {
 
     pub fn make_key(&self, key: &str) -> String {
         format!("{}:{}", self.key_prefix, key)
+    }
+
+    pub fn get_max_lifetime_duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(self.max_lifetime))
+    }
+
+    pub fn get_idle_timeout_duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(self.idle_timeout))
+    }
+
+    pub fn get_connection_timeout_duration(&self) -> Duration {
+        Duration::from_secs(self.connection_timeout)
     }
 }
 
@@ -86,5 +127,9 @@ impl QueueConfig {
     pub fn with_poll_interval(mut self, interval: u64) -> Self {
         self.poll_interval = interval;
         self
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }

@@ -30,4 +30,22 @@ pub enum JobError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("Task join error: {0}")]
+    TaskJoinError(#[from] tokio::task::JoinError),
+
+    #[error("Pool exhausted: {0}")]
+    PoolExhausted(String),
+
+    #[error("Connection timeout after {0}s")]
+    ConnectionTimeout(u64),
+
+    #[error("Pool closed")]
+    PoolClosed,
+
+    #[error("Health check failed: {0}")]
+    HealthCheckFailed(String),
+
+    #[error("Pool error: {0}")]
+    PoolError(#[from] deadpool::managed::PoolError<redis::RedisError>),
 }

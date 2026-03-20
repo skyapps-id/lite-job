@@ -1,7 +1,10 @@
+use crate::circuit_breaker::CircuitBreaker;
 use crate::error::{JobError, JobResult};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn, error};
+use rand::Rng;
 
 /// Retry configuration for Redis operations
 #[derive(Clone)]
@@ -10,6 +13,9 @@ pub struct RetryConfig {
     pub initial_delay_ms: u64,
     pub max_delay_ms: u64,
     pub backoff_multiplier: f64,
+    pub jitter_ms: u64,
+    pub circuit_breaker_threshold: Option<u32>,
+    pub circuit_breaker_timeout_secs: Option<u64>,
 }
 
 impl Default for RetryConfig {
@@ -19,6 +25,9 @@ impl Default for RetryConfig {
             initial_delay_ms: 100,
             max_delay_ms: 10000,
             backoff_multiplier: 2.0,
+            jitter_ms: 100,
+            circuit_breaker_threshold: Some(10),
+            circuit_breaker_timeout_secs: Some(30),
         }
     }
 }
@@ -42,9 +51,30 @@ impl RetryConfig {
         self.max_delay_ms = delay_ms;
         self
     }
+
+    pub fn with_jitter(mut self, jitter_ms: u64) -> Self {
+        self.jitter_ms = jitter_ms;
+        self
+    }
+
+    pub fn with_circuit_breaker(mut self, threshold: u32, timeout_secs: u64) -> Self {
+        self.circuit_breaker_threshold = Some(threshold);
+        self.circuit_breaker_timeout_secs = Some(timeout_secs);
+        self
+    }
+
+    pub fn without_circuit_breaker(mut self) -> Self {
+        self.circuit_breaker_threshold = None;
+        self.circuit_breaker_timeout_secs = None;
+        self
+    }
 }
 
-/// Execute an async operation with retry logic and exponential backoff
+thread_local! {
+    static CIRCUIT_BREAKER: std::cell::RefCell<Option<Arc<CircuitBreaker>>> = std::cell::RefCell::new(None);
+}
+
+/// Execute an async operation with retry logic, exponential backoff with jitter, and circuit breaker
 pub async fn retry_async<F, Fut, T>(
     operation: F,
     config: Option<RetryConfig>,
@@ -57,9 +87,48 @@ where
     let mut current_delay = Duration::from_millis(config.initial_delay_ms);
     let mut first_error_msg: Option<String> = None;
 
+    // Initialize circuit breaker if configured
+    if let Some(threshold) = config.circuit_breaker_threshold {
+        let timeout = Duration::from_secs(config.circuit_breaker_timeout_secs.unwrap_or(30));
+        
+        CIRCUIT_BREAKER.with(|breaker| {
+            if breaker.borrow().is_none() {
+                *breaker.borrow_mut() = Some(Arc::new(CircuitBreaker::new(threshold, timeout)));
+            }
+        });
+    }
+
     for attempt in 1..=config.max_attempts {
+        // Check circuit breaker before attempting
+        if config.circuit_breaker_threshold.is_some() {
+            CIRCUIT_BREAKER.with(|breaker| {
+                if let Some(b) = breaker.borrow().as_ref() {
+                    let allowed = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(b.is_request_allowed())
+                    });
+                    
+                    if !allowed {
+                        warn!("🔴 Circuit breaker is OPEN - blocking request");
+                        return Err(JobError::QueueError("Circuit breaker is open".to_string()));
+                    }
+                }
+                Ok(())
+            })?;
+        }
+
         match operation().await {
             Ok(result) => {
+                // Record success in circuit breaker
+                if config.circuit_breaker_threshold.is_some() {
+                    CIRCUIT_BREAKER.with(|breaker| {
+                        if let Some(b) = breaker.borrow().as_ref() {
+                            let _ = tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current().block_on(b.record_success())
+                            });
+                        }
+                    });
+                }
+
                 // Log success if we recovered from a failure
                 if attempt > 1 {
                     if let Some(ref first_err) = first_error_msg {
@@ -82,16 +151,43 @@ where
                 // Check if it's a connection error (retryable)
                 let is_connection_error = is_retryable_error(&err);
 
+                // Record failure in circuit breaker
+                if is_connection_error {
+                    if config.circuit_breaker_threshold.is_some() {
+                        CIRCUIT_BREAKER.with(|breaker| {
+                            if let Some(b) = breaker.borrow().as_ref() {
+                                let _ = tokio::task::block_in_place(|| {
+                                    tokio::runtime::Handle::current().block_on(b.record_failure())
+                                });
+                            }
+                        });
+                    }
+                }
+
                 if is_connection_error && attempt < config.max_attempts {
+                    // Add jitter to prevent thundering herd
+                    let jitter = if config.jitter_ms > 0 {
+                        let mut rng = rand::thread_rng();
+                        rng.gen_range(0..config.jitter_ms)
+                    } else {
+                        0
+                    };
+
                     warn!(
-                        "⚠️  Redis operation failed (attempt {}/{}): {}. Retrying in {:?}...",
+                        "⚠️  Redis operation failed (attempt {}/{}): {}. Retrying in {:?}+{:?}ms...",
                         attempt,
                         config.max_attempts,
                         err,
-                        current_delay
+                        current_delay,
+                        jitter
                     );
 
                     sleep(current_delay).await;
+                    
+                    // Sleep for jitter if set
+                    if jitter > 0 {
+                        sleep(Duration::from_millis(jitter)).await;
+                    }
 
                     // Exponential backoff
                     current_delay = std::cmp::min(

@@ -1,47 +1,45 @@
-use lite_job_redis::{JobQueue, QueueConfig, RedisConfig, RetryConfig};
-use serde::{Deserialize, Serialize};
-use tokio::time::{sleep, Duration};
+use lite_job_redis::{JobResult, SubscriberRegistry};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Task {
-    id: u32,
-    text: String,
+fn handle_orders(data: Vec<u8>) -> JobResult<()> {
+    let msg = String::from_utf8_lossy(&data);
+    println!("📦 Order received: {}", msg);
+    Ok(())
+}
+
+fn handle_logs(data: Vec<u8>) -> JobResult<()> {
+    let msg = String::from_utf8_lossy(&data);
+    println!("📊 Log: {}", msg);
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let config = RedisConfig::new("redis://127.0.0.1:6379");
+    println!("🚀 RabbitMQ-Style Consumer (Centralized Connection Management)\n");
+    println!("Features:");
+    println!("  ✓ Connection supervisor per pool");
+    println!("  ✓ Single retry loop (logged once)");
+    println!("  ✓ Workers wait for 'ready' signal");
+    println!("  ✓ Clean logs - no retry spam!\n");
 
-    // Setup queue with custom retry config (optional)
-    // Default: 10 attempts, 500ms initial delay, 30s max delay
-    let retry_config = RetryConfig::new()
-        .with_max_attempts(20)
-        .with_initial_delay(500)
-        .with_max_delay(30000);
+    let registry = SubscriberRegistry::new()
+        // Order queue with larger pool (high traffic)
+        .register("orders", handle_orders)
+            .with_pool_size(20)
+            .with_concurrency(5)
+        // Log queue with smaller pool (low traffic)
+        .register("logs", handle_logs)
+            .with_pool_size(5)
+            .with_concurrency(2);
 
-    let queue_config = QueueConfig::new("my_queue");
-    let queue = JobQueue::new(queue_config, config)
-        .await?
-        .with_retry_config(retry_config);
+    println!("💡 Stop Redis to see:");
+    println!("  1. Only 1 '⚠️ Redis disconnected' log (not 10x)");
+    println!("  2. Only 1 retry loop in background");
+    println!("  3. Workers wait, don't spam retries");
+    println!("  4. Single '✅ Redis connected' on recovery\n");
 
-    println!("Waiting for tasks from queue 'my_queue'...");
-    println!("Press Ctrl+C to stop");
-
-    loop {
-        // Try to dequeue job
-        if let Some(job) = queue.dequeue::<Task>().await? {
-            println!("\n🎉 TASK RECEIVED!");
-            println!("   Job ID: {}", job.id);
-            println!("   Queue: my_queue");
-            println!("   ID: {}", job.payload.id);
-            println!("   Text: {}", job.payload.text);
-            println!("   Retries: {}", job.retries);
-            println!();
-        }
-
-        // Wait a bit before checking again
-        sleep(Duration::from_millis(500)).await;
-    }
+    registry.run().await?;
+    Ok(())
 }
+
