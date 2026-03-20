@@ -9,7 +9,6 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct RedisPool {
     supervisor: Arc<ConnectionSupervisor>,
-    config: Arc<RedisConfig>,
     metrics: Arc<MetricsRegistry>,
     queue_name: String,
     pool_size: usize,
@@ -29,14 +28,13 @@ impl RedisPool {
     ) -> JobResult<Self> {
         let actual_pool_size = pool_size.unwrap_or(config.pool_size);
 
-        let supervisor = Arc::new(ConnectionSupervisor::new(config.clone()));
+        let supervisor = Arc::new(ConnectionSupervisor::new(config));
         supervisor.start().await?;
 
         metrics.register_queue(queue_name, actual_pool_size).await;
 
         Ok(Self {
             supervisor,
-            config: Arc::new(config),
             metrics,
             queue_name: queue_name.to_string(),
             pool_size: actual_pool_size,
