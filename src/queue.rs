@@ -34,6 +34,7 @@ pub struct JobQueue {
 }
 
 impl JobQueue {
+    /// Creates a new JobQueue instance
     pub async fn new(
         queue_config: QueueConfig,
         redis_config: RedisConfig,
@@ -53,11 +54,13 @@ impl JobQueue {
         })
     }
 
+    /// Configures retry settings
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
         self
     }
 
+    /// Adds job to queue (with ETA → ZSET, without ETA → LIST)
     pub async fn enqueue<T>(&self, job: Job<T>) -> JobResult<String>
     where
         T: serde::Serialize,
@@ -91,6 +94,7 @@ impl JobQueue {
         Ok(job.id)
     }
 
+    /// Gets next job (prioritizes ready scheduled jobs, then regular)
     pub async fn dequeue<T>(&self) -> JobResult<Option<Job<T>>>
     where
         T: for<'de> serde::Deserialize<'de>,
@@ -127,7 +131,7 @@ impl JobQueue {
         }
     }
 
-    /// Get the count of scheduled and regular jobs for monitoring
+    /// Returns (regular_count, scheduled_count)
     pub async fn get_job_counts(&self) -> JobResult<(usize, usize)> {
         let queue_key = self.redis_config.make_key(&format!("queue:{}", self.config.name));
         let schedule_key = self.redis_config.make_key(&format!("schedule:{}", self.config.name));
@@ -151,10 +155,7 @@ impl JobQueue {
         Ok((regular_count, scheduled_count))
     }
 
-    /// Batch dequeue multiple ready jobs at once for high-throughput scenarios
-    ///
-    /// Returns up to `batch_size` jobs that are ready to process
-    /// Prioritizes scheduled jobs that are ready, then regular jobs
+    /// Gets up to batch_size ready jobs at once
     pub async fn dequeue_batch<T>(&self, batch_size: usize) -> JobResult<Vec<Job<T>>>
     where
         T: for<'de> serde::Deserialize<'de>,
@@ -220,13 +221,7 @@ impl JobQueue {
         Ok(jobs)
     }
 
-    /// Flush all jobs from this queue (both LIST and ZSET)
-    /// 
-    /// This removes ALL pending jobs from the queue:
-    /// - Regular jobs in LIST
-    /// - Scheduled jobs in ZSET
-    /// 
-    /// Use with caution - this operation cannot be undone!
+    /// Deletes all jobs (cannot be undone!)
     pub async fn flush(&self) -> JobResult<()> {
         let queue_key = self.redis_config.make_key(&format!("queue:{}", self.config.name));
         let schedule_key = self.redis_config.make_key(&format!("schedule:{}", self.config.name));
@@ -249,7 +244,7 @@ impl JobQueue {
         Ok(())
     }
 
-    /// Get detailed queue statistics for monitoring and observability
+    /// Returns queue statistics
     pub async fn get_queue_stats(&self) -> JobResult<QueueStats> {
         let (regular_count, scheduled_count) = self.get_job_counts().await?;
 
@@ -261,7 +256,7 @@ impl JobQueue {
         })
     }
 
-    /// List all queues in Redis (both LIST and ZSET keys)
+    /// Lists all queue names in Redis
     pub async fn list_all(config: &RedisConfig) -> JobResult<Vec<String>> {
         let client = redis::Client::open(config.url.clone())?;
         let mut conn = client.get_multiplexed_async_connection().await
@@ -304,7 +299,7 @@ impl JobQueue {
         Ok(result)
     }
 
-    /// Get statistics for all queues in Redis
+    /// Returns statistics for all queues
     pub async fn get_all_queue_stats(config: &RedisConfig) -> JobResult<Vec<QueueStats>> {
         let queue_names = Self::list_all(config).await?;
         

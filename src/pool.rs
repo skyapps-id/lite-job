@@ -15,10 +15,12 @@ pub struct RedisPool {
 }
 
 impl RedisPool {
+    /// Creates new pool with default config
     pub async fn new(config: RedisConfig, queue_name: &str, metrics: Arc<MetricsRegistry>) -> JobResult<Self> {
         Self::with_config(config, queue_name, metrics, None, None).await
     }
 
+    /// Creates new pool with custom config
     pub async fn with_config(
         config: RedisConfig,
         queue_name: &str,
@@ -41,6 +43,7 @@ impl RedisPool {
         })
     }
 
+    /// Gets connection with automatic metrics tracking
     pub async fn get_connection(&self) -> JobResult<Connection> {
         let start = Instant::now();
         let result = self.supervisor.get_connection().await;
@@ -65,6 +68,7 @@ impl RedisPool {
         }
     }
 
+    /// Returns pool status
     pub async fn status(&self) -> PoolStatus {
         self.metrics
             .get_pool_status(&self.queue_name)
@@ -80,6 +84,7 @@ impl RedisPool {
             })
     }
 
+    /// Returns reference to supervisor
     pub fn supervisor(&self) -> &Arc<ConnectionSupervisor> {
         &self.supervisor
     }

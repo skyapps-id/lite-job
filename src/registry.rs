@@ -61,6 +61,7 @@ pub struct QueueBuilder<'a, F = Handler> {
 }
 
 impl SubscriberRegistry {
+    /// Creates new registry
     pub fn new() -> Self {
         Self {
             redis_config: RedisConfig::new("redis://127.0.0.1:6379"),
@@ -74,11 +75,13 @@ impl SubscriberRegistry {
         }
     }
 
+    /// Sets Redis connection URL
     pub fn with_redis(mut self, url: impl Into<String>) -> Self {
         self.redis_config = RedisConfig::new(url);
         self
     }
 
+    /// Registers queue with handler (returns builder)
     pub fn register<'a, F>(&'a mut self, queue: impl Into<String>, handler: F) -> QueueBuilder<'a, F>
     where
         F: Send + Sync + 'static,
@@ -114,6 +117,7 @@ impl SubscriberRegistry {
         self
     }
 
+    /// Starts all workers (runs until Ctrl+C)
     pub async fn run(self) -> JobResult<()> {
         tracing::info!("SubscriberRegistry starting...");
         tracing::info!("Metrics enabled");
@@ -368,27 +372,32 @@ impl SubscriberRegistry {
         Ok(())
     }
 
+    /// Returns pool status for queue
     pub async fn get_pool_status(&self, queue_name: &str) -> Option<crate::metrics::PoolStatus> {
         self.metrics.get_pool_status(queue_name).await
     }
 
+    /// Returns metrics for queue
     pub async fn get_metrics(&self, queue_name: &str) -> Option<PerformanceMetrics> {
         self.metrics.get_metrics(queue_name).await
     }
 
+    /// Returns metrics for all queues
     pub async fn get_all_metrics(&self) -> HashMap<String, PerformanceMetrics> {
         self.metrics.get_all_metrics().await
     }
 
+    /// Returns health status for queue
     pub async fn health_check(&self, queue_name: &str) -> QueueHealth {
         self.metrics.health_check(queue_name).await
     }
 
+    /// Returns health status for all queues
     pub async fn health_check_all(&self) -> HashMap<String, QueueHealth> {
         self.metrics.health_check_all().await
     }
 
-    /// Get job counts for a specific queue from metrics
+    /// Returns (regular_count, scheduled_count)
     pub async fn get_job_counts(&self, queue_name: &str) -> Option<(usize, usize)> {
         let health = self.metrics.health_check(queue_name).await;
         Some((health.regular_jobs_count, health.scheduled_jobs_count))
@@ -399,16 +408,70 @@ impl<'a, F> QueueBuilder<'a, F>
 where
     F: Send + Sync + 'static,
 {
+    /// Sets the number of concurrent workers for this queue
+    ///
+    /// # Arguments
+    /// * `concurrency` - Number of parallel worker tasks to spawn
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// 1 (single worker)
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("orders", handler)
+    ///     .with_concurrency(10)  // 10 parallel workers
+    ///     .build();
+    /// ```
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
         self
     }
 
+    /// Sets the maximum size of the connection pool for this queue
+    ///
+    /// # Arguments
+    /// * `pool_size` - Maximum number of Redis connections in the pool
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// None (uses pool default)
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("orders", handler)
+    ///     .with_pool_size(20)  // Max 20 connections
+    ///     .build();
+    /// ```
     pub fn with_pool_size(mut self, pool_size: usize) -> Self {
         self.pool_size = Some(pool_size);
         self
     }
 
+    /// Sets the minimum number of idle connections to maintain
+    ///
+    /// # Arguments
+    /// * `min_idle` - Minimum idle connections to keep open
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// None (uses pool default)
+    ///
+    /// # Use Case
+    /// Ensures connections are ready for bursts of activity
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("orders", handler)
+    ///     .with_min_idle(5)  // Keep 5 connections ready
+    ///     .build();
+    /// ```
     pub fn with_min_idle(mut self, min_idle: usize) -> Self {
         self.min_idle = Some(min_idle);
         self
@@ -419,6 +482,23 @@ impl<'a, F> QueueBuilder<'a, F>
 where
     F: Fn(Vec<u8>) -> JobResult<()> + Send + Sync + 'static,
 {
+    /// Builds and registers the queue configuration
+    ///
+    /// # Behavior
+    /// - Adds the queue to the registry
+    /// - Spawns workers when `run()` is called
+    /// - Workers will process jobs from the queue
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("orders", |data| {
+    ///     let order: Order = serde_json::from_slice(&data)?;
+    ///     process_order(order)?;
+    ///     Ok(())
+    /// })
+    /// .with_concurrency(5)
+    /// .build();  // Must call build() to register
+    /// ```
     pub fn build(mut self) {
         if let Some(handler) = self.handler.take() {
             self.registry.workers.push(WorkerConfig {
@@ -449,6 +529,38 @@ impl<'a, F> QueueBuilder<'a, F>
 where
     F: Send + Sync + 'static,
 {
+    /// Adds dependency injection support to the handler
+    ///
+    /// # Type Parameters
+    /// * `T` - Type of shared data (must be Send + Sync + 'static)
+    ///
+    /// # Arguments
+    /// * `data` - Shared data to pass to all worker instances
+    ///
+    /// # Returns
+    /// * `QueueBuilderWithData` - Builder with DI support
+    ///
+    /// # Use Case
+    /// Share database connections, HTTP clients, or other resources across workers
+    ///
+    /// # Example
+    /// ```ignore
+    /// struct AppContext {
+    ///     db: Database,
+    ///     http_client: HttpClient,
+    /// }
+    ///
+    /// let ctx = AppContext { /* ... */ };
+    ///
+    /// registry.register("orders", |data, ctx| {
+    ///     let order: Order = serde_json::from_slice(&data)?;
+    ///     ctx.db.save_order(&order)?;
+    ///     Ok(())
+    /// })
+    /// .with_data(ctx)
+    /// .with_concurrency(10)
+    /// .build();
+    /// ```
     pub fn with_data<T>(mut self, data: T) -> QueueBuilderWithData<'a, T>
     where
         F: Fn(Vec<u8>, Arc<T>) -> JobResult<()> + 'static,
@@ -478,21 +590,79 @@ impl<'a, T> QueueBuilderWithData<'a, T>
 where
     T: Send + Sync + 'static,
 {
+    /// Sets the number of concurrent workers for this queue (with DI)
+    ///
+    /// # Arguments
+    /// * `concurrency` - Number of parallel worker tasks to spawn
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// 1 (single worker)
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("orders", handler)
+    ///     .with_data(ctx)
+    ///     .with_concurrency(10)  // 10 parallel workers with shared ctx
+    ///     .build();
+    /// ```
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
         self
     }
 
+    /// Sets the maximum size of the connection pool for this queue (with DI)
+    ///
+    /// # Arguments
+    /// * `pool_size` - Maximum number of Redis connections in the pool
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// None (uses pool default)
     pub fn with_pool_size(mut self, pool_size: usize) -> Self {
         self.pool_size = Some(pool_size);
         self
     }
 
+    /// Sets the minimum number of idle connections to maintain (with DI)
+    ///
+    /// # Arguments
+    /// * `min_idle` - Minimum idle connections to keep open
+    ///
+    /// # Returns
+    /// * `Self` - Returns self for method chaining
+    ///
+    /// # Default
+    /// None (uses pool default)
     pub fn with_min_idle(mut self, min_idle: usize) -> Self {
         self.min_idle = Some(min_idle);
         self
     }
 
+    /// Builds and registers the queue configuration with dependency injection
+    ///
+    /// # Behavior
+    /// - Adds the queue to the registry with shared data
+    /// - Spawns workers with access to shared data when `run()` is called
+    /// - All workers share the same data instance via Arc
+    ///
+    /// # Example
+    /// ```ignore
+    /// let ctx = AppContext::new();
+    ///
+    /// registry.register("orders", |data, ctx| {
+    ///     let order: Order = serde_json::from_slice(&data)?;
+    ///     ctx.db.save_order(&order)?;
+    ///     Ok(())
+    /// })
+    /// .with_data(ctx)
+    /// .with_concurrency(10)
+    /// .build();  // Must call build() to register
+    /// ```
     pub fn build(self) {
         self.registry.workers_with_data.push(WorkerConfigWithData {
             queue: self.queue.clone(),

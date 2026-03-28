@@ -32,6 +32,7 @@ pub struct PerformanceMetrics {
 }
 
 impl PerformanceMetrics {
+    /// Creates new metrics instance
     pub fn new() -> Self {
         Self {
             total_operations: 0,
@@ -43,6 +44,7 @@ impl PerformanceMetrics {
         }
     }
 
+    /// Records successful operation with latency
     pub fn record_success(&mut self, latency_ms: f64) {
         self.total_operations += 1;
         self.successful_operations += 1;
@@ -51,6 +53,7 @@ impl PerformanceMetrics {
         self.last_operation_time = Some(Instant::now());
     }
 
+    /// Records failed operation
     pub fn record_failure(&mut self) {
         self.total_operations += 1;
         self.failed_operations += 1;
@@ -88,12 +91,14 @@ struct QueueMetrics {
 }
 
 impl MetricsRegistry {
+    /// Creates new registry
     pub fn new() -> Self {
         Self {
             queue_metrics: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// Registers queue for metrics tracking
     pub async fn register_queue(&self, queue_name: &str, pool_size: usize) {
         let mut metrics = self.queue_metrics.write().await;
         metrics.insert(
@@ -114,6 +119,7 @@ impl MetricsRegistry {
         );
     }
 
+    /// Records operation result with latency
     pub async fn record_operation(&self, queue_name: &str, latency_ms: f64, success: bool) {
         let mut metrics = self.queue_metrics.write().await;
         if let Some(queue_metrics) = metrics.get_mut(queue_name) {
@@ -125,6 +131,7 @@ impl MetricsRegistry {
         }
     }
 
+    /// Records error (keeps last 100)
     pub async fn record_error(&self, queue_name: &str, error: String) {
         let mut metrics = self.queue_metrics.write().await;
         if let Some(queue_metrics) = metrics.get_mut(queue_name) {
@@ -136,6 +143,7 @@ impl MetricsRegistry {
         }
     }
 
+    /// Updates job counts for queue
     pub async fn update_job_counts(&self, queue_name: &str, scheduled: usize, regular: usize) {
         let mut metrics = self.queue_metrics.write().await;
         if let Some(queue_metrics) = metrics.get_mut(queue_name) {
@@ -144,16 +152,19 @@ impl MetricsRegistry {
         }
     }
 
+    /// Returns pool status for queue
     pub async fn get_pool_status(&self, queue_name: &str) -> Option<PoolStatus> {
         let metrics = self.queue_metrics.read().await;
         metrics.get(queue_name).map(|m| m.pool_status.clone())
     }
 
+    /// Returns metrics for queue
     pub async fn get_metrics(&self, queue_name: &str) -> Option<PerformanceMetrics> {
         let metrics = self.queue_metrics.read().await;
         metrics.get(queue_name).map(|m| m.performance.clone())
     }
 
+    /// Returns metrics for all queues
     pub async fn get_all_metrics(&self) -> HashMap<String, PerformanceMetrics> {
         let metrics = self.queue_metrics.read().await;
         metrics
@@ -162,6 +173,7 @@ impl MetricsRegistry {
             .collect()
     }
 
+    /// Returns health status (Unhealthy/Degraded/Healthy)
     pub async fn health_check(&self, queue_name: &str) -> QueueHealth {
         let metrics = self.queue_metrics.read().await;
         if let Some(queue_metrics) = metrics.get(queue_name) {
@@ -217,6 +229,7 @@ impl MetricsRegistry {
         }
     }
 
+    /// Returns health status for all queues
     pub async fn health_check_all(&self) -> HashMap<String, QueueHealth> {
         let metrics = self.queue_metrics.read().await;
         let mut result = HashMap::new();
