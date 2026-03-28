@@ -3,7 +3,8 @@ use crate::error::{JobError, JobResult};
 use crate::job::Job;
 use crate::retry::{retry_async, RetryConfig};
 use chrono::Utc;
-use redis::{AsyncCommands, Script};
+use redis::{AsyncCommands, Cmd, Script};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 static DEQUEUE_SCRIPT: &str = r#"
@@ -258,6 +259,71 @@ impl JobQueue {
             scheduled_jobs: scheduled_count,
             total_pending: regular_count + scheduled_count,
         })
+    }
+
+    /// List all queues in Redis (both LIST and ZSET keys)
+    pub async fn list_all(config: &RedisConfig) -> JobResult<Vec<String>> {
+        let client = redis::Client::open(config.url.clone())?;
+        let mut conn = client.get_multiplexed_async_connection().await
+            .map_err(JobError::from)?;
+        
+        // Get all queue keys (LIST)
+        let queue_pattern = format!("{}:*queue:*", config.key_prefix);
+        let queue_keys: Vec<String> = Cmd::keys(&queue_pattern)
+            .query_async(&mut conn)
+            .await
+            .map_err(JobError::from)?;
+        
+        // Get all schedule keys (ZSET)
+        let schedule_pattern = format!("{}:*schedule:*", config.key_prefix);
+        let schedule_keys: Vec<String> = Cmd::keys(&schedule_pattern)
+            .query_async(&mut conn)
+            .await
+            .map_err(JobError::from)?;
+        
+        // Extract queue names from keys
+        let mut queue_names = HashSet::new();
+        
+        for key in queue_keys {
+            // Format: {prefix}:queue:{queue_name}
+            if let Some(rest) = key.strip_prefix(&format!("{}:queue:", config.key_prefix)) {
+                queue_names.insert(rest.to_string());
+            }
+        }
+        
+        for key in schedule_keys {
+            // Format: {prefix}:schedule:{queue_name}
+            if let Some(rest) = key.strip_prefix(&format!("{}:schedule:", config.key_prefix)) {
+                queue_names.insert(rest.to_string());
+            }
+        }
+        
+        let mut result: Vec<String> = queue_names.into_iter().collect();
+        result.sort();
+        
+        Ok(result)
+    }
+
+    /// Get statistics for all queues in Redis
+    pub async fn get_all_queue_stats(config: &RedisConfig) -> JobResult<Vec<QueueStats>> {
+        let queue_names = Self::list_all(config).await?;
+        
+        let mut all_stats = Vec::new();
+        
+        for queue_name in queue_names {
+            let queue_config = QueueConfig::new(&queue_name);
+            let queue = JobQueue::new(queue_config, config.clone()).await?;
+            
+            let (regular, scheduled) = queue.get_job_counts().await?;
+            all_stats.push(QueueStats {
+                queue_name,
+                regular_jobs: regular,
+                scheduled_jobs: scheduled,
+                total_pending: regular + scheduled,
+            });
+        }
+        
+        Ok(all_stats)
     }
 }
 
