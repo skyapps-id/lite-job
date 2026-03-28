@@ -5,17 +5,11 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job<T> {
-    /// Unique job identifier
     pub id: String,
-    /// Job payload data
     pub payload: T,
-    /// Target queue name
     pub queue: String,
-    /// Job creation timestamp
     pub created_at: DateTime<Utc>,
-    /// Optional scheduled execution time (ETA)
     pub eta: Option<DateTime<Utc>>,
-    /// Current job status
     pub status: JobStatus,
 }
 
