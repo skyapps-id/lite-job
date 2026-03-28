@@ -322,7 +322,6 @@ impl JobQueue {
     }
 }
 
-/// Queue statistics for monitoring
 #[derive(Debug, Clone)]
 pub struct QueueStats {
     pub queue_name: String,
