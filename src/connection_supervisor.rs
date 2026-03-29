@@ -1,8 +1,9 @@
 use crate::config::RedisConfig;
 use crate::error::{JobError, JobResult};
 use crate::retry::RetryConfig;
-use deadpool_redis::Connection;
+use redis::aio::ConnectionManager;
 use redis::cmd;
+use redis::Client;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
@@ -64,17 +65,15 @@ impl ConnectionSupervisor {
         }
     }
 
-    pub async fn get_connection(&self) -> JobResult<Connection> {
+    pub async fn get_connection(&self) -> JobResult<ConnectionManager> {
         self.wait_ready().await?;
 
-        let cfg = deadpool_redis::Config::from_url(&self.config.url);
-        let pool = cfg
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .map_err(|e| JobError::InvalidConfig(format!("Failed to create pool: {}", e)))?;
+        let client = Client::open(self.config.url.as_str())
+            .map_err(|e| JobError::InvalidConfig(format!("Failed to create Redis client: {}", e)))?;
 
-        pool.get()
+        ConnectionManager::new(client)
             .await
-            .map_err(|e| JobError::PoolExhausted(e.to_string()))
+            .map_err(JobError::from)
     }
 
     async fn supervision_loop(
