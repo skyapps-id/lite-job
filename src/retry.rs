@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn, error};
-use rand::Rng;
 
 /// Retry configuration for Redis operations
 #[derive(Clone)]
@@ -154,8 +153,7 @@ where
                 if is_connection_error && attempt < config.max_attempts {
                     // Add jitter to prevent thundering herd
                     let jitter = if config.jitter_ms > 0 {
-                        let mut rng = rand::thread_rng();
-                        rng.gen_range(0..config.jitter_ms)
+                        rand::random::<u64>() % config.jitter_ms as u64
                     } else {
                         0
                     };

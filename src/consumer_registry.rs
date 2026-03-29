@@ -2,7 +2,6 @@ use crate::config::{RedisConfig, ConsumerInfo};
 use crate::error::{JobError, JobResult};
 use crate::retry::{retry_async, RetryConfig};
 use chrono::Utc;
-use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -12,7 +11,7 @@ use tokio::time::sleep;
 /// Example: "1712345678901-1234567890"
 fn generate_consumer_id() -> String {
     let timestamp_ms = Utc::now().timestamp_millis();
-    let random: u32 = rand::thread_rng().gen();
+    let random: u32 = rand::random();
     format!("{}-{}", timestamp_ms, random)
 }
 

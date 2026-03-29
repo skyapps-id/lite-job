@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use rand::Rng;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Example: "1712345678901-1234567890"
 fn generate_job_id() -> String {
     let timestamp_ms = Utc::now().timestamp_millis();
-    let random: u32 = rand::thread_rng().gen();
+    let random: u32 = rand::random();
     format!("{}-{}", timestamp_ms, random)
 }
 
