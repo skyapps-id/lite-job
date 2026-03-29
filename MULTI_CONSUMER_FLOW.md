@@ -124,7 +124,7 @@ if target_consumer == my_id {
 ┌─────────────────────────────────────────────────────────────────┐
 │                     PRODUCER SIDE                               │
 │  - Enqueue jobs (with/without ETA)                           │
-│  - Jobs → ZSET (scheduled) atau LIST (regular)                 │
+│  - Jobs → ZSET (scheduled) or LIST (regular)                 │
 └────────────────────┬────────────────────────────────────────────┘
                      │
             ┌────────┴────────┐
@@ -444,20 +444,20 @@ end
 ```
 
 **Keys:** `KEYS[1,2,3]`
-- `list_key`: Queue untuk regular jobs
-- `zset_key`: Schedule untuk ETA jobs
-- `meta_key`: Metadata termasuk counter
+- `list_key`: Queue for regular jobs
+- `zset_key`: Schedule for ETA jobs
+- `meta_key`: Metadata including counter
 
 **Arguments:** `ARGV[1,2,3]`
-- `current_time`: Untuk check ETA
-- `consumer_id`: ID consumer ini (0, 1, 2, ...)
+- `current_time`: For ETA check
+- `consumer_id`: This consumer ID (0, 1, 2, ...)
 - `num_consumers`: Total active consumers
 
 **Logic:**
 1. Increment counter atomically (HINCRBY)
 2. Calculate target consumer: `counter % num_consumers`
-3. Hanya consumer yang tepat yang boleh ambil job
-4. Consumer lain → `nil` (skip)
+3. Only the right consumer can take the job
+4. Other consumers → `nil` (skip)
 
 ---
 
