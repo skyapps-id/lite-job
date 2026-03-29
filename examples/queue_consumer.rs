@@ -1,4 +1,3 @@
-use chrono::Utc;
 use lite_job_redis::{JobResult, SubscriberRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -11,16 +10,12 @@ struct Task {
 
 #[derive(Clone)]
 struct AppData {
-    db_url: String,
-    api_key: String,
     processed_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AppData {
     fn new() -> Self {
         Self {
-            db_url: "postgresql://localhost:5432/mydb".to_string(),
-            api_key: "sk-1234567890".to_string(),
             processed_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
