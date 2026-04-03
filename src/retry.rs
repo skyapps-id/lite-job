@@ -86,15 +86,10 @@ where
     }
 
     for attempt in 1..=config.max_attempts {
-        // Check circuit breaker before attempting
         if config.circuit_breaker_threshold.is_some() {
             CIRCUIT_BREAKER.with(|breaker| {
                 if let Some(b) = breaker.borrow().as_ref() {
-                    let allowed = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(b.is_request_allowed())
-                    });
-                    
-                    if !allowed {
+                    if !b.try_is_request_allowed() {
                         warn!("Circuit breaker is OPEN - blocking request");
                         return Err(JobError::QueueError("Circuit breaker is open".to_string()));
                     }
@@ -105,18 +100,14 @@ where
 
         match operation().await {
             Ok(result) => {
-                // Record success in circuit breaker
                 if config.circuit_breaker_threshold.is_some() {
                     CIRCUIT_BREAKER.with(|breaker| {
                         if let Some(b) = breaker.borrow().as_ref() {
-                            tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(b.record_success())
-                            });
+                            b.try_record_success();
                         }
                     });
                 }
 
-                // Log success if we recovered from a failure
                 if attempt > 1 {
                     if let Some(ref first_err) = first_error_msg {
                         info!(
@@ -130,22 +121,17 @@ where
                 return Ok(result);
             }
             Err(err) => {
-                // Store first error message for reporting
                 if first_error_msg.is_none() {
                     first_error_msg = Some(err.to_string());
                 }
 
-                // Check if it's a connection error (retryable)
                 let is_connection_error = is_retryable_error(&err);
 
-                // Record failure in circuit breaker
                 if is_connection_error
                     && config.circuit_breaker_threshold.is_some() {
                         CIRCUIT_BREAKER.with(|breaker| {
                             if let Some(b) = breaker.borrow().as_ref() {
-                                tokio::task::block_in_place(|| {
-                                    tokio::runtime::Handle::current().block_on(b.record_failure())
-                                });
+                                b.try_record_failure();
                             }
                         });
                     }

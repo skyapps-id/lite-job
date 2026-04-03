@@ -34,60 +34,82 @@ impl CircuitBreaker {
         }
     }
 
-    pub async fn is_request_allowed(&self) -> bool {
-        let state = self.state.read().await;
-        
-        match *state {
-            CircuitState::Closed => true,
-            CircuitState::Open => {
-                let last_failure = self.last_failure_time.read().await;
-                if let Some(failure_time) = *last_failure {
-                    if failure_time.elapsed() >= self.timeout {
-                        drop(state);
-                        // Transition to HalfOpen
-                        *self.state.write().await = CircuitState::HalfOpen;
-                        self.success_count.store(0, Ordering::Relaxed);
-                        true
-                    } else {
-                        false
+    pub fn try_is_request_allowed(&self) -> bool {
+        match self.state.try_read() {
+            Ok(state) => {
+                match *state {
+                    CircuitState::Closed => true,
+                    CircuitState::Open => {
+                        match self.last_failure_time.try_read() {
+                            Ok(last_failure) => {
+                                if let Some(failure_time) = *last_failure {
+                                    if failure_time.elapsed() >= self.timeout {
+                                        drop(state);
+                                        if let Ok(mut state_w) = self.state.try_write() {
+                                            *state_w = CircuitState::HalfOpen;
+                                            self.success_count.store(0, Ordering::Relaxed);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            Err(_) => true,
+                        }
                     }
-                } else {
-                    false
+                    CircuitState::HalfOpen => true,
                 }
             }
-            CircuitState::HalfOpen => true,
+            Err(_) => true,
         }
     }
 
-    pub async fn record_success(&self) {
-        let state = self.state.read().await;
-        
-        if *state == CircuitState::HalfOpen {
-            let current = self.success_count.fetch_add(1, Ordering::Relaxed);
-            
-            if current + 1 >= self.success_threshold {
-                drop(state);
-                *self.state.write().await = CircuitState::Closed;
+    pub fn try_record_success(&self) {
+        if let Ok(state) = self.state.try_read() {
+            if *state == CircuitState::HalfOpen {
+                let current = self.success_count.fetch_add(1, Ordering::Relaxed);
+                
+                if current + 1 >= self.success_threshold {
+                    drop(state);
+                    if let Ok(mut state_w) = self.state.try_write() {
+                        if *state_w == CircuitState::HalfOpen {
+                            *state_w = CircuitState::Closed;
+                            self.failure_count.store(0, Ordering::Relaxed);
+                            self.success_count.store(0, Ordering::Relaxed);
+                        }
+                    }
+                }
+            } else {
                 self.failure_count.store(0, Ordering::Relaxed);
-                self.success_count.store(0, Ordering::Relaxed);
             }
-        } else {
-            self.failure_count.store(0, Ordering::Relaxed);
         }
     }
 
-    pub async fn record_failure(&self) {
+    pub fn try_state(&self) -> CircuitState {
+        self.state.try_read()
+            .map(|state| state.clone())
+            .unwrap_or(CircuitState::Closed)
+    }
+
+    pub fn try_record_failure(&self) {
         let current = self.failure_count.fetch_add(1, Ordering::Relaxed);
 
         if current + 1 >= self.failure_threshold {
-            *self.state.write().await = CircuitState::Open;
-            *self.last_failure_time.write().await = Some(Instant::now());
-            tracing::warn!("Circuit breaker OPEN after {} failures", current + 1);
+            if let Ok(mut state) = self.state.try_write() {
+                if *state != CircuitState::Open {
+                    *state = CircuitState::Open;
+                    if let Ok(mut last_failure) = self.last_failure_time.try_write() {
+                        *last_failure = Some(Instant::now());
+                        tracing::warn!("Circuit breaker OPEN after {} failures", current + 1);
+                    }
+                }
+            }
         }
-    }
-
-    pub async fn state(&self) -> CircuitState {
-        self.state.read().await.clone()
     }
 }
 
@@ -99,46 +121,46 @@ mod tests {
     async fn test_circuit_breaker_opens_after_threshold() {
         let breaker = CircuitBreaker::new(3, Duration::from_secs(5));
         
-        assert!(breaker.is_request_allowed().await);
+        assert!(breaker.try_is_request_allowed());
         
-        breaker.record_failure().await;
-        breaker.record_failure().await;
-        assert!(breaker.is_request_allowed().await);
+        breaker.try_record_failure();
+        breaker.try_record_failure();
+        assert!(breaker.try_is_request_allowed());
         
-        breaker.record_failure().await;
-        assert!(!breaker.is_request_allowed().await);
-        assert_eq!(breaker.state().await, CircuitState::Open);
+        breaker.try_record_failure();
+        assert!(!breaker.try_is_request_allowed());
+        assert_eq!(breaker.try_state(), CircuitState::Open);
     }
 
     #[tokio::test]
     async fn test_circuit_breaker_transitions_to_half_open() {
         let breaker = CircuitBreaker::new(2, Duration::from_millis(100));
         
-        breaker.record_failure().await;
-        breaker.record_failure().await;
+        breaker.try_record_failure();
+        breaker.try_record_failure();
         
-        assert_eq!(breaker.state().await, CircuitState::Open);
-        assert!(!breaker.is_request_allowed().await);
+        assert_eq!(breaker.try_state(), CircuitState::Open);
+        assert!(!breaker.try_is_request_allowed());
         
         tokio::time::sleep(Duration::from_millis(150)).await;
         
-        assert!(breaker.is_request_allowed().await);
-        assert_eq!(breaker.state().await, CircuitState::HalfOpen);
+        assert!(breaker.try_is_request_allowed());
+        assert_eq!(breaker.try_state(), CircuitState::HalfOpen);
     }
 
     #[tokio::test]
     async fn test_circuit_breaker_closes_after_successes() {
         let breaker = CircuitBreaker::new(2, Duration::from_millis(100));
         
-        breaker.record_failure().await;
-        breaker.record_failure().await;
+        breaker.try_record_failure();
+        breaker.try_record_failure();
         
         tokio::time::sleep(Duration::from_millis(150)).await;
         
-        breaker.is_request_allowed().await;
-        breaker.record_success().await;
-        breaker.record_success().await;
+        breaker.try_is_request_allowed();
+        breaker.try_record_success();
+        breaker.try_record_success();
         
-        assert_eq!(breaker.state().await, CircuitState::Closed);
+        assert_eq!(breaker.try_state(), CircuitState::Closed);
     }
 }
