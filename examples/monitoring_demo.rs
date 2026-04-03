@@ -3,6 +3,10 @@ use std::env;
 use std::time::Duration as StdDuration;
 use tokio::time::sleep;
 
+async fn noop_handler(_data: Vec<u8>) -> liteq::JobResult<()> {
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -29,11 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         regular_count, scheduled_count, stats.total_pending);
 
     let mut registry = SubscriberRegistry::new();
-    let handler = |_data: Vec<u8>| -> liteq::JobResult<()> {
-        Ok(())
-    };
 
-    registry.register(&queue_name, handler).build();
+    registry.register(&queue_name, noop_handler).build();
 
     println!("⏳ Real-time monitoring (10 seconds)...\n");
 

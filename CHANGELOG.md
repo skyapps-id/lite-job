@@ -2,6 +2,109 @@
 
 All notable changes to liteq will be documented in this file.
 
+## [1.2.0] - 2026-04-03
+
+### ⚠️ Breaking Change - Async Handlers
+
+**All handlers are now async by default!** This is a significant improvement that enables non-blocking job processing.
+
+#### Changed
+
+- **Handler Signature**: All handlers must now be `async fn`
+  - **Before**: `fn handle(data: Vec<u8>) -> JobResult<()>`
+  - **After**: `async fn handle(data: Vec<u8>) -> JobResult<()>`
+  - **Handler invocation**: Now uses `.await` internally
+
+- **Handler Type**: Updated from sync `Fn` to async `Fn` returning `Future`
+  - `src/registry.rs:15-17` - Changed `Handler` type to support async
+  - `src/registry.rs:336, 420` - Added `.await` when calling handlers
+
+- **Trait Bounds**: Updated to require async function traits
+  ```rust
+  F: Fn(Vec<u8>) -> Fut + Send + Sync + Clone + 'static,
+  Fut: Future<Output = JobResult<()>> + Send + 'static,
+  ```
+
+#### Added
+
+- **Full Async Support**: Handlers can now:
+  - Call async database operations
+  - Make HTTP requests to external APIs
+  - Perform async I/O operations
+  - Use any async/await syntax
+
+- **New Example**: `examples/async_handler_demo.rs`
+  - Demonstrates async handler with external API call
+  - Shows dependency injection with async containers
+
+#### Benefits
+
+✅ **Non-blocking**: Worker threads no longer block on I/O
+✅ **Better Performance**: Higher throughput with async operations
+✅ **More Flexible**: Use any async library (tokio, reqwest, sqlx, etc.)
+✅ **Type-Safe**: Full async/await support with proper error handling
+
+### Migration Guide
+
+**Before (v1.1.x):**
+```rust
+fn handle_orders(data: Vec<u8>) -> JobResult<()> {
+    let order: Order = serde_json::from_slice(&data)?;
+    db.save_order(&order)?;  // Sync call
+    Ok(())
+}
+```
+
+**After (v1.2.0):**
+```rust
+async fn handle_orders(data: Vec<u8>) -> JobResult<()> {
+    let order: Order = serde_json::from_slice(&data)?;
+    db.save_order(&order).await?;  // Async call
+    Ok(())
+}
+```
+
+**With Dependency Injection:**
+```rust
+let container = Arc::new(Container::new());
+
+registry.register("timeouts", move |data| {
+    let container = container.clone();
+    async move {
+        handle_timeout(data, container).await
+    }
+})
+.build();
+
+async fn handle_timeout(data: Vec<u8>, container: Arc<Container>) -> JobResult<()> {
+    container.update_status(...).await?;
+    Ok(())
+}
+```
+
+### Impact
+
+- ✅ **Zero Runtime Overhead**: Async handlers are just as fast as sync
+- ✅ **Better Resource Usage**: Worker threads can handle more concurrent jobs
+- ✅ **Future-Proof**: Aligns with Rust async ecosystem best practices
+- ⚠️ **Breaking Change**: All handler functions must be updated to `async fn`
+
+### Testing
+
+All existing tests pass. Test with:
+```bash
+# Test async handler
+cargo run --example async_handler_demo
+
+# Test consumer with async handlers
+cargo run --example queue_consumer
+
+# Run all tests
+cargo test
+```
+
+---
+
 ## [1.1.1] - 2026-04-02
 
 ### Changed

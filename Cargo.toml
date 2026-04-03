@@ -1,8 +1,8 @@
 [package]
 name = "liteq"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2021"
-description = "High-performance job queue library for Rust using Redis with auto-retry, connection pooling, and multi-consumer fair distribution"
+description = "High-performance job queue library for Rust using Redis with auto-retry, connection pooling, async handlers, and multi-consumer fair distribution"
 license = "MIT"
 repository = "https://github.com/skyapps-id/lite-job"
 keywords = ["redis", "queue", "job", "async", "tokio"]
