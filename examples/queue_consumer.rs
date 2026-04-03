@@ -29,7 +29,7 @@ impl AppData {
     }
 }
 
-fn handle_orders(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
+async fn handle_orders(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
     let task: Task = serde_json::from_slice(&data)?;
     
     app_data.increment_counter();
@@ -40,7 +40,7 @@ fn handle_orders(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
     Ok(())
 }
 
-fn handle_logs(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
+async fn handle_logs(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
     let msg = String::from_utf8_lossy(&data);
     
     app_data.increment_counter();
@@ -55,29 +55,36 @@ fn handle_logs(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    println!("🚀 Consumer Demo - Multi-Instance Fair Distribution\n");
+    println!("🚀 Consumer Demo - Async Handlers with Dependency Injection\n");
 
     let redis_url = std::env::var("REDIS_URL")
         .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     
     let mut registry = SubscriberRegistry::new()
         .with_redis(redis_url);
-    let app_data = AppData::new();
-    let log_data = AppData::new();
+    
+    let app_data = Arc::new(AppData::new());
+    let log_data = Arc::new(AppData::new());
 
-    // Order queue with dependency injection and larger pool (high traffic)
-    registry.register("orders", handle_orders)
-        .with_data(app_data)
-        .with_pool_size(20)
-        .with_concurrency(1)
-        .build();
+    registry.register("orders", move |data| {
+        let app_data = app_data.clone();
+        async move {
+            handle_orders(data, app_data).await
+        }
+    })
+    .with_pool_size(20)
+    .with_concurrency(1)
+    .build();
 
-    // Log queue with dependency injection and smaller pool (low traffic)
-    registry.register("logs", handle_logs)
-        .with_data(log_data)
-        .with_pool_size(5)
-        .with_concurrency(2)
-        .build();
+    registry.register("logs", move |data| {
+        let log_data = log_data.clone();
+        async move {
+            handle_logs(data, log_data).await
+        }
+    })
+    .with_pool_size(5)
+    .with_concurrency(2)
+    .build();
 
     println!("⏳ Waiting for jobs...\n");
 

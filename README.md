@@ -14,7 +14,7 @@ High-performance job queue library for Rust using Redis with auto-retry, connect
 - **📊 Monitoring**: Health checks, job counts, and queue statistics
 - **📝 Structured Logging**: Uses `tracing` for structured, production-ready logging
 - **🔒 Type Safe**: Full Rust type safety with generics
-- **⚙️ Async/Await**: Built on Tokio for efficient async processing
+- **⚙️ Async Handlers**: Full async/await support for non-blocking job processing
 - **🎨 Builder Pattern**: Fluent API for configuring queues and workers
 
 ## Installation
@@ -23,7 +23,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-liteq = "1.1"
+liteq = "1.2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_orders(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
+async fn handle_orders(data: Vec<u8>, app_data: Arc<AppData>) -> JobResult<()> {
     // Deserialize payload directly
     let order: serde_json::Value = serde_json::from_slice(&data)?;
     println!("Processing order: {}", order);
@@ -292,6 +292,113 @@ The `data` is passed as `Arc<T>` to your handler function, making it easy to sha
 - Configuration
 - Counters/metrics
 
+## Async Handlers
+
+**Handlers are now fully async!** This allows you to:
+- Call async database operations
+- Make HTTP requests to external APIs
+- Perform I/O operations without blocking
+- Use async/await syntax throughout your handlers
+
+### Simple Async Handler
+
+```rust
+async fn handle_orders(data: Vec<u8>) -> JobResult<()> {
+    let order: Order = serde_json::from_slice(&data)?;
+
+    // You can now use .await here!
+    database.save_order(&order).await?;
+    notify_webhook(&order.id).await?;
+
+    Ok(())
+}
+
+registry.register("orders", handle_orders)
+    .with_pool_size(10)
+    .with_concurrency(5)
+    .build();
+```
+
+### Async Handler with Dependency Injection
+
+Perfect for injecting async clients (database, HTTP, etc.):
+
+```rust
+use std::sync::Arc;
+
+struct Container {
+    db: Database,
+    http_client: HttpClient,
+}
+
+async fn handle_timeout(data: Vec<u8>, container: Arc<Container>) -> JobResult<()> {
+    let payload: Payload = serde_json::from_slice(&data)?;
+
+    // Call async methods on your container
+    container
+        .update_status(
+            payload.event_id,
+            "TIMEOUT".to_string(),
+        )
+        .await?;
+
+    Ok(())
+}
+
+let container = Arc::new(Container::new());
+
+registry.register("timeouts", move |data| {
+    let container = container.clone();
+    async move {
+        handle_timeout(data, container).await
+    }
+})
+.build();
+```
+
+### Key Benefits
+
+✅ **Non-blocking**: Handlers don't block worker threads
+✅ **Async I/O**: Perfect for databases, HTTP calls, file operations
+✅ **Type-safe**: Full async/await support with proper error handling
+✅ **Flexible**: Use any async library (tokio, reqwest, sqlx, etc.)
+
+### Example: External API Call
+
+```rust
+use reqwest::Client;
+
+async fn process_payment(data: Vec<u8>, client: Arc<Client>) -> JobResult<()> {
+    let payment: PaymentRequest = serde_json::from_slice(&data)?;
+
+    // Call external payment API
+    let response = client
+        .post("https://api.payment.com/charge")
+        .json(&payment)
+        .send()
+        .await?;
+
+    println!("Payment processed: {:?}", response);
+
+    Ok(())
+}
+
+let http_client = Arc::new(Client::new());
+
+registry.register("payments", move |data| {
+    let client = http_client.clone();
+    async move {
+        process_payment(data, client).await
+    }
+})
+.build();
+```
+
+**Run async handler demo:**
+```bash
+cargo run --example async_handler_demo
+```
+
 ## Connection Supervision & Auto-Retry
 
 The library automatically handles Redis connection failures with RabbitMQ-style supervision:
@@ -361,8 +468,11 @@ Available builder methods:
 # Run producer (send jobs)
 cargo run --example queue_producer
 
-# Run consumer (process jobs)
+# Run consumer (process jobs with async handlers)
 cargo run --example queue_consumer
+
+# Run async handler demo (with external API calls)
+cargo run --example async_handler_demo
 
 # Monitor queue stats
 cargo run --example monitoring_demo orders
@@ -406,6 +516,7 @@ redis-server
 
 - **ZSET**: Scheduled jobs with ETA (score = timestamp)
 - **LIST**: Regular jobs (FIFO)
+- **Async Handlers**: Full async/await support for non-blocking job processing
 - **ConnectionManager**: Persistent connections with auto-reconnect and configurable timeouts
 - **Connection Supervisor**: RabbitMQ-style supervision with exponential backoff retry
 - **PubSub Auto-Reconnect**: Automatic reconnection and re-subscription on connection loss
@@ -425,7 +536,8 @@ redis-server
 📊 **Observable** - Health checks and monitoring with tracing
 🎯 **Flexible** - Configure per-queue pool sizes, worker counts, and timeouts
 🔒 **Type Safe** - Full type safety with generics and Arc<T> for shared state
-💾 **Persistent** - Jobs stored in Redis even if consumer is down  
+💾 **Persistent** - Jobs stored in Redis even if consumer is down
+🚀 **Async Handlers** - Non-blocking async/await support for better performance  
 
 ## Documentation
 

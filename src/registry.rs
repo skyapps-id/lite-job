@@ -8,17 +8,19 @@ use crate::queue::JobQueue;
 use crate::retry::RetryConfig;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use futures_util::future::join_all;
 
-type Handler = Arc<dyn Fn(Vec<u8>) -> JobResult<()> + Send + Sync>;
+type AsyncHandler = Arc<dyn Fn(Vec<u8>) -> Pin<Box<dyn Future<Output = JobResult<()>> + Send>> + Send + Sync>;
 
-type HandlerWithData = Arc<dyn Fn(Vec<u8>, Arc<dyn std::any::Any + Send + Sync>) -> JobResult<()> + Send + Sync>;
+type AsyncHandlerWithData = Arc<dyn Fn(Vec<u8>, Arc<dyn std::any::Any + Send + Sync>) -> Pin<Box<dyn Future<Output = JobResult<()>> + Send>> + Send + Sync>;
 
 struct WorkerConfig {
     queue: String,
-    handler: Handler,
+    handler: AsyncHandler,
     concurrency: usize,
     pool_size: Option<usize>,
     min_idle: Option<usize>,
@@ -26,7 +28,7 @@ struct WorkerConfig {
 
 struct WorkerConfigWithData {
     queue: String,
-    handler: HandlerWithData,
+    handler: AsyncHandlerWithData,
     data: Arc<dyn std::any::Any + Send + Sync>,
     concurrency: usize,
     pool_size: Option<usize>,
@@ -36,14 +38,14 @@ struct WorkerConfigWithData {
 struct QueueGroup {
     pool: Arc<RedisPool>,
     queue: Arc<JobQueue>,
-    workers: Vec<(Handler, usize)>,
+    workers: Vec<(AsyncHandler, usize)>,
     consumer_info: Option<ConsumerInfo>,
 }
 
 struct QueueGroupWithData {
     pool: Arc<RedisPool>,
     queue: Arc<JobQueue>,
-    workers: Vec<(HandlerWithData, Arc<dyn std::any::Any + Send + Sync>, usize)>,
+    workers: Vec<(AsyncHandlerWithData, Arc<dyn std::any::Any + Send + Sync>, usize)>,
     consumer_info: Option<ConsumerInfo>,
 }
 
@@ -55,7 +57,7 @@ pub struct SubscriberRegistry {
     workers_with_data: Vec<WorkerConfigWithData>,
 }
 
-pub struct QueueBuilder<'a, F = Handler> {
+pub struct QueueBuilder<'a, F = AsyncHandler> {
     registry: &'a mut SubscriberRegistry,
     queue: String,
     handler: Option<F>,
@@ -85,10 +87,21 @@ impl SubscriberRegistry {
         self
     }
 
-    /// Registers queue with handler (returns builder)
-    pub fn register<'a, F>(&'a mut self, queue: impl Into<String>, handler: F) -> QueueBuilder<'a, F>
+    /// Registers queue with async handler (returns builder)
+    /// 
+    /// Handler must be an async function that accepts Vec<u8> and returns JobResult<()>
+    /// 
+    /// # Example
+    /// ```ignore
+    /// async fn handle(data: Vec<u8>) -> JobResult<()> {
+    ///     Ok(())
+    /// }
+    /// registry.register("orders", handle)
+    /// ```
+    pub fn register<'a, F, Fut>(&'a mut self, queue: impl Into<String>, handler: F) -> QueueBuilder<'a, F>
     where
-        F: Send + Sync + 'static,
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + Clone + 'static,
+        Fut: Future<Output = JobResult<()>> + Send + 'static,
     {
         QueueBuilder {
             registry: self,
@@ -320,7 +333,7 @@ impl SubscriberRegistry {
                                 let data = serde_json::to_vec(&job.payload).unwrap_or_default();
 
                                 let start = std::time::Instant::now();
-                                let result = handler(data);
+                                let result = handler(data).await;
                                 let latency = start.elapsed().as_millis() as f64;
 
                                 if let Err(e) = result {
@@ -404,7 +417,7 @@ impl SubscriberRegistry {
                                 let job_data = serde_json::to_vec(&job.payload).unwrap_or_default();
 
                                 let start = std::time::Instant::now();
-                                let result = handler(job_data, data_clone.clone());
+                                let result = handler(job_data, data_clone.clone()).await;
                                 let latency = start.elapsed().as_millis() as f64;
 
                                 if let Err(e) = result {
@@ -486,9 +499,10 @@ impl SubscriberRegistry {
     }
 }
 
-impl<'a, F> QueueBuilder<'a, F>
+impl<'a, F, Fut> QueueBuilder<'a, F>
 where
-    F: Send + Sync + 'static,
+    F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = JobResult<()>> + Send + 'static,
 {
     /// Sets the number of concurrent workers for this queue
     ///
@@ -560,32 +574,40 @@ where
     }
 }
 
-impl<'a, F> QueueBuilder<'a, F>
+impl<'a, F, Fut> QueueBuilder<'a, F>
 where
-    F: Fn(Vec<u8>) -> JobResult<()> + Send + Sync + 'static,
+    F: Fn(Vec<u8>) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = JobResult<()>> + Send + 'static,
 {
     /// Builds and registers the queue configuration
     ///
     /// # Behavior
     /// - Adds the queue to the registry
     /// - Spawns workers when `run()` is called
-    /// - Workers will process jobs from the queue
+    /// - Workers will process jobs from the queue asynchronously
     ///
     /// # Example
     /// ```ignore
-    /// registry.register("orders", |data| {
+    /// async fn handle(data: Vec<u8>) -> JobResult<()> {
     ///     let order: Order = serde_json::from_slice(&data)?;
-    ///     process_order(order)?;
+    ///     process_order_async(order).await?;
     ///     Ok(())
-    /// })
+    /// }
+    /// registry.register("orders", handle)
     /// .with_concurrency(5)
     /// .build();  // Must call build() to register
     /// ```
     pub fn build(mut self) {
         if let Some(handler) = self.handler.take() {
+            let wrapped_handler: AsyncHandler = Arc::new(move |data: Vec<u8>| {
+                let handler = handler.clone();
+                Box::pin(async move {
+                    handler(data).await
+                })
+            });
             self.registry.workers.push(WorkerConfig {
                 queue: self.queue.clone(),
-                handler: Arc::new(handler),
+                handler: wrapped_handler,
                 concurrency: self.concurrency,
                 pool_size: self.pool_size,
                 min_idle: self.min_idle,
@@ -600,18 +622,19 @@ where
 {
     registry: &'a mut SubscriberRegistry,
     queue: String,
-    handler: HandlerWithData,
+    handler: AsyncHandlerWithData,
     data: Arc<T>,
     concurrency: usize,
     pool_size: Option<usize>,
     min_idle: Option<usize>,
 }
 
-impl<'a, F> QueueBuilder<'a, F>
+impl<'a, F, Fut> QueueBuilder<'a, F>
 where
-    F: Send + Sync + 'static,
+    F: Fn(Vec<u8>) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = JobResult<()>> + Send + 'static,
 {
-    /// Adds dependency injection support to the handler
+    /// Adds dependency injection support to the async handler
     ///
     /// # Type Parameters
     /// * `T` - Type of shared data (must be Send + Sync + 'static)
@@ -629,31 +652,37 @@ where
     /// ```ignore
     /// struct AppContext {
     ///     db: Database,
-    ///     http_client: HttpClient,
     /// }
     ///
-    /// let ctx = AppContext { /* ... */ };
+    /// let ctx = Arc::new(AppContext { /* ... */ });
     ///
-    /// registry.register("orders", |data, ctx| {
+    /// async fn handle_with_ctx(data: Vec<u8>, ctx: Arc<AppContext>) -> JobResult<()> {
     ///     let order: Order = serde_json::from_slice(&data)?;
-    ///     ctx.db.save_order(&order)?;
+    ///     ctx.db.save_order(&order).await?;
     ///     Ok(())
-    /// })
+    /// }
+    ///
+    /// registry.register("orders", handle_with_ctx)
     /// .with_data(ctx)
     /// .with_concurrency(10)
     /// .build();
     /// ```
     pub fn with_data<T>(mut self, data: T) -> QueueBuilderWithData<'a, T>
     where
-        F: Fn(Vec<u8>, Arc<T>) -> JobResult<()> + 'static,
         T: Send + Sync + 'static,
+        F: Fn(Vec<u8>, Arc<T>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = JobResult<()>> + Send + 'static,
     {
         let data_arc = Arc::new(data);
         let data_clone = data_arc.clone();
 
         let handler = self.handler.take().expect("Handler not set");
-        let wrapper = Arc::new(move |job_data: Vec<u8>, _any_data: Arc<dyn std::any::Any + Send + Sync>| -> JobResult<()> {
-            handler(job_data, data_clone.clone())
+        let wrapper = Arc::new(move |job_data: Vec<u8>, _any_data: Arc<dyn std::any::Any + Send + Sync>| -> Pin<Box<dyn Future<Output = JobResult<()>> + Send>> {
+            let handler = handler.clone();
+            let data_clone = data_clone.clone();
+            Box::pin(async move {
+                handler(job_data, data_clone).await
+            })
         });
 
         QueueBuilderWithData {
@@ -736,11 +765,13 @@ where
     /// ```ignore
     /// let ctx = AppContext::new();
     ///
-    /// registry.register("orders", |data, ctx| {
+    /// async fn handle(data: Vec<u8>, ctx: Arc<AppContext>) -> JobResult<()> {
     ///     let order: Order = serde_json::from_slice(&data)?;
-    ///     ctx.db.save_order(&order)?;
+    ///     ctx.db.save_order(&order).await?;
     ///     Ok(())
-    /// })
+    /// }
+    ///
+    /// registry.register("orders", handle)
     /// .with_data(ctx)
     /// .with_concurrency(10)
     /// .build();  // Must call build() to register
