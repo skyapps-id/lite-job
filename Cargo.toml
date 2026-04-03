@@ -1,6 +1,6 @@
 [package]
 name = "liteq"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "High-performance job queue library for Rust using Redis with auto-retry, connection pooling, and multi-consumer fair distribution"
 license = "MIT"
@@ -26,6 +26,7 @@ futures-util = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+actix-web = "4.9"
 
 [features]
 cluster = ["redis/cluster"]
